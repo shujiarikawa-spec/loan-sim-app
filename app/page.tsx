@@ -170,22 +170,46 @@ function AnimNumber({ value }: { value: number }) {
 function WalkingFamilyScene() {
   const ref = useRef<HTMLDivElement>(null);
   const [progress, setProgress] = useState(0);
-  const animRef = useRef<number | null>(null);
-  const startRef = useRef<number | null>(null);
 
   useEffect(() => {
-    const dur = 6000;
-    const anim = (now: number) => {
-      if (!startRef.current) startRef.current = now;
-      const t = Math.min((now - startRef.current) / dur, 1);
-      setProgress(t);
-      if (t < 1) animRef.current = requestAnimationFrame(anim);
+    const animDur = 8000;   // アニメーション本体 8秒
+    const loopInterval = 15000; // 15秒ごとにループ
+
+    let animId: number | null = null;
+    let loopId: ReturnType<typeof setTimeout> | null = null;
+
+    const runAnim = () => {
+      setProgress(0);
+      const start = performance.now();
+      const tick = (now: number) => {
+        const t = Math.min((now - start) / animDur, 1);
+        setProgress(t);
+        if (t < 1) animId = requestAnimationFrame(tick);
+      };
+      animId = requestAnimationFrame(tick);
     };
+
+    const scheduleLoop = () => {
+      loopId = setTimeout(() => {
+        runAnim();
+        scheduleLoop();
+      }, loopInterval);
+    };
+
     const obs = new IntersectionObserver(([e]) => {
-      if (e.isIntersecting) { animRef.current = requestAnimationFrame(anim); obs.disconnect(); }
+      if (e.isIntersecting) {
+        runAnim();
+        scheduleLoop();
+        obs.disconnect();
+      }
     }, { threshold: 0.3 });
     if (ref.current) obs.observe(ref.current);
-    return () => { obs.disconnect(); if (animRef.current) cancelAnimationFrame(animRef.current); };
+
+    return () => {
+      obs.disconnect();
+      if (animId) cancelAnimationFrame(animId);
+      if (loopId) clearTimeout(loopId);
+    };
   }, []);
 
   // 歩行アニメーション — 足を交互に振る
@@ -356,23 +380,47 @@ function WalkingFamilyScene() {
 function LifeLineAnimation() {
   const svgRef = useRef<SVGSVGElement>(null);
   const [progress, setProgress] = useState(0);
-  const animRef = useRef<number | null>(null);
-  const startRef = useRef<number | null>(null);
 
   useEffect(() => {
-    const duration = 4500;
-    const animate = (now: number) => {
-      if (!startRef.current) startRef.current = now;
-      const t = Math.min((now - startRef.current) / duration, 1);
-      const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-      setProgress(ease);
-      if (t < 1) animRef.current = requestAnimationFrame(animate);
+    const animDur = 4500;
+    const loopInterval = 15000;
+
+    let animId: number | null = null;
+    let loopId: ReturnType<typeof setTimeout> | null = null;
+
+    const runAnim = () => {
+      setProgress(0);
+      const start = performance.now();
+      const tick = (now: number) => {
+        const t = Math.min((now - start) / animDur, 1);
+        const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+        setProgress(ease);
+        if (t < 1) animId = requestAnimationFrame(tick);
+      };
+      animId = requestAnimationFrame(tick);
     };
+
+    const scheduleLoop = () => {
+      loopId = setTimeout(() => {
+        runAnim();
+        scheduleLoop();
+      }, loopInterval);
+    };
+
     const obs = new IntersectionObserver(([e]) => {
-      if (e.isIntersecting) { animRef.current = requestAnimationFrame(animate); obs.disconnect(); }
+      if (e.isIntersecting) {
+        runAnim();
+        scheduleLoop();
+        obs.disconnect();
+      }
     }, { threshold: 0.2 });
     if (svgRef.current) obs.observe(svgRef.current);
-    return () => { obs.disconnect(); if (animRef.current) cancelAnimationFrame(animRef.current); };
+
+    return () => {
+      obs.disconnect();
+      if (animId) cancelAnimationFrame(animId);
+      if (loopId) clearTimeout(loopId);
+    };
   }, []);
 
   const W = 1200, H = 160;
@@ -502,7 +550,7 @@ export default function LoanSimulator() {
   const [valueChangeRate, setValueChangeRate] = useState(-0.5);
 
   const [tableOpen, setTableOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<"main" | "compare" | "rent">("main");
+  const [activeTab, setActiveTab] = useState<"main" | "compare" | "rent" | "tax">("main");
   const [mounted, setMounted] = useState(false);
   useEffect(() => { const t = setTimeout(() => setMounted(true), 80); return () => clearTimeout(t); }, []);
 
@@ -536,6 +584,85 @@ export default function LoanSimulator() {
   const finalPropVal = propertyValue * 10000 * Math.pow(1 + valueChangeRate / 100, year);
   const lastRent = rentData[rentData.length - 1];
 
+  // ── 住宅ローン控除・補助金 ──
+  const [annualIncome, setAnnualIncome] = useState(600);   // 年収（万円）
+  const [householdType, setHouseholdType] = useState<"single" | "family">("family");
+  const [propertyType, setPropertyType] = useState<"certified" | "zeh" | "eco" | "general">("certified");
+  const [isNewBuild, setIsNewBuild] = useState(true);
+  const [entryYear, setEntryYear] = useState(2024);
+
+  // 所得税・住民税の概算
+  const taxableIncome = useMemo(() => {
+    const deduction = annualIncome <= 162.5 ? 55
+      : annualIncome <= 180 ? annualIncome * 0.4 - 10
+        : annualIncome <= 360 ? annualIncome * 0.3 + 8
+          : annualIncome <= 660 ? annualIncome * 0.2 + 44
+            : annualIncome * 0.1 + 110;
+    const basic = householdType === "family" ? 48 : 48;
+    return Math.max(0, annualIncome - deduction - basic);
+  }, [annualIncome, householdType]);
+
+  const incomeTax = useMemo(() => {
+    const ti = taxableIncome;
+    if (ti <= 195) return ti * 0.05;
+    if (ti <= 330) return ti * 0.1 - 9.75;
+    if (ti <= 695) return ti * 0.2 - 42.75;
+    if (ti <= 900) return ti * 0.23 - 63.6;
+    if (ti <= 1800) return ti * 0.33 - 153.6;
+    if (ti <= 4000) return ti * 0.40 - 279.6;
+    return ti * 0.45 - 479.6;
+  }, [taxableIncome]);
+
+  const residentTax = useMemo(() => taxableIncome * 0.1, [taxableIncome]);
+
+  // 住宅ローン控除の借入限度額
+  const loanLimit = useMemo(() => {
+    if (!isNewBuild) return entryYear <= 2025 ? 2000 : 0;
+    if (propertyType === "certified") return entryYear <= 2025 ? 5000 : 4500;
+    if (propertyType === "zeh") return entryYear <= 2025 ? 4500 : 3500;
+    if (propertyType === "eco") return entryYear <= 2025 ? 4000 : 3000;
+    return entryYear <= 2025 ? 3000 : 2000; // general
+  }, [propertyType, isNewBuild, entryYear]);
+
+  const deductionRate = 0.007; // 0.7%
+  const deductionYears = isNewBuild ? 13 : 10;
+
+  // 補助金額
+  const subsidy = useMemo(() => {
+    if (!isNewBuild) return 0;
+    if (propertyType === "certified") return 160; // 長期優良住宅
+    if (propertyType === "zeh") return 100;
+    if (propertyType === "eco") return 80;
+    return 0;
+  }, [propertyType, isNewBuild]);
+
+  // 年次控除シミュレーション
+  const taxDeductionData = useMemo(() => {
+    const rows: {
+      yr: number; balance: number; maxDeduction: number;
+      actualDeduction: number; cumDeduction: number;
+    }[] = [];
+    let cum = 0;
+    const effectiveLoan = Math.min(amount, loanLimit) * 10000;
+    for (let i = 1; i <= deductionYears; i++) {
+      const bal = Math.floor((result.yearlyData[i - 1]?.balance ?? 0) * 10000);
+      const appliedBal = Math.min(bal, effectiveLoan);
+      const maxDed = Math.floor(appliedBal * deductionRate / 10000); // 万円
+      // 所得税から控除（超過分は住民税から最大9.75万円）
+      const fromIncomeTax = Math.min(maxDed, incomeTax);
+      const remaining = maxDed - fromIncomeTax;
+      const fromResidentTax = Math.min(remaining, 9.75);
+      const actual = Math.floor((fromIncomeTax + fromResidentTax) * 10) / 10;
+      cum += actual;
+      rows.push({ yr: i, balance: Math.floor(bal / 10000), maxDeduction: maxDed, actualDeduction: actual, cumDeduction: Math.floor(cum * 10) / 10 });
+    }
+    return rows;
+  }, [amount, loanLimit, deductionYears, result.yearlyData, incomeTax, residentTax]);
+
+  const totalDeduction = taxDeductionData[taxDeductionData.length - 1]?.cumDeduction ?? 0;
+  const totalBenefit = totalDeduction + subsidy;
+  const effectiveCost = Math.floor(totalPayment / 10000) - totalDeduction + amount - subsidy - amount; // ローン分のみ
+
   const cardStyle = { background: "#FAFAF8", border: "1px solid #EAE5DB", borderRadius: 20 };
 
   return (
@@ -563,6 +690,10 @@ export default function LoanSimulator() {
         .tab-btn.active { background: #5C7A6B; color: #fff; }
         .tab-btn:not(.active) { background: transparent; color: #8C7B6B; }
         .tab-btn:not(.active):hover { background: #F0EDE6; }
+        @keyframes tooltipPop {
+          from { opacity:0; transform:scale(0.88) translateY(4px); }
+          to   { opacity:1; transform:scale(1) translateY(0); }
+        }
         @keyframes slideUp { from { opacity:0; transform:translateY(18px) } to { opacity:1; transform:translateY(0) } }
         .slide-up { animation: slideUp 0.55s ease forwards; }
         .d1 { animation-delay:0.05s; opacity:0; }
@@ -574,13 +705,88 @@ export default function LoanSimulator() {
         .accordion-inner { overflow: hidden; transition: max-height 0.45s cubic-bezier(0.4,0,0.2,1), opacity 0.3s; }
         tr.yr:hover { background: #F0EDE6 !important; }
         input[type=number] { -moz-appearance: textfield; }
+
+        /* ── レスポンシブ ── */
+        .main-grid        { display: grid; grid-template-columns: minmax(280px,380px) 1fr; gap: 20px; }
+        .chart-grid       { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .compare-grid     { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .diff-grid        { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+        .rent-grid        { display: grid; grid-template-columns: 300px 1fr; gap: 20px; }
+        .summary-bar-grid { display: grid; grid-template-columns: 1fr 1px 1fr 1px 1fr; }
+        .pill-grid        { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .rate-col-grid    { display: grid; grid-template-columns: 68px 1fr 96px; gap: 6px; }
+
+        @media (max-width: 900px) {
+          .main-grid    { grid-template-columns: 1fr; }
+          .rent-grid    { grid-template-columns: 1fr; }
+          .compare-grid { grid-template-columns: 1fr; }
+          .diff-grid    { grid-template-columns: 1fr 1fr; }
+          .rate-col-grid { grid-template-columns: 60px 1fr 80px; gap: 5px; }
+        }
+        @media (max-width: 640px) {
+          .chart-grid       { grid-template-columns: 1fr; }
+          .diff-grid        { grid-template-columns: 1fr 1fr; }
+          .summary-bar-grid { grid-template-columns: 1fr 1fr; gap: 16px; }
+          .summary-sep      { display: none !important; }
+          .pill-grid        { grid-template-columns: 1fr 1fr; }
+        }
+        @media (max-width: 480px) {
+          .pill-grid { grid-template-columns: 1fr 1fr; }
+          .rate-col-grid { grid-template-columns: 54px 1fr 72px; gap: 4px; }
+          .diff-grid { grid-template-columns: 1fr; }
+        }
+        .tab-nav { width: 100%; max-width: 640px; }
+        .tab-label { display: inline; }
+        /* インフォツールチップ */
+        .info-wrap { position: relative; display: inline-flex; align-items: center; }
+        .info-tip  {
+          visibility: hidden; opacity: 0;
+          position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+          background: #2D3B35; color: #F0EDE6; font-size: 11px; line-height: 1.7;
+          border-radius: 12px; padding: 10px 14px; width: 240px; z-index: 100;
+          box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+          transition: opacity 0.2s ease, visibility 0.2s ease;
+          pointer-events: none;
+        }
+        .info-tip::after {
+          content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+          border: 6px solid transparent; border-top-color: #2D3B35;
+        }
+        .info-wrap:hover .info-tip,
+        .info-wrap:focus-within .info-tip { visibility: visible; opacity: 1; }
+        .info-icon { cursor: help; color: #A89A8A; transition: color 0.15s; }
+        .info-icon:hover { color: #5C7A6B; }
+        /* tax grid */
+        .tax-grid { display: grid; grid-template-columns: 320px 1fr; gap: 20px; }
+        .tax-benefit-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+        @media (max-width: 900px) {
+          .tax-grid { grid-template-columns: 1fr; }
+          .tax-benefit-grid { grid-template-columns: 1fr 1fr; }
+        }
+        @media (max-width: 480px) {
+          .tax-benefit-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 400px) {
+          .tab-label { display: none; }
+          .tab-btn { padding: 8px 10px; }
+          .tab-nav { max-width: 100%; }
+        }
+        .content-wrap { max-width: 1200px; margin: 0 auto; padding: 32px 20px 80px; }
+        @media (max-width: 768px) {
+          .hero-section { height: 480px; }
+          .content-wrap { padding: 24px 16px 60px; }
+        }
+        @media (max-width: 480px) {
+          .hero-section { height: 360px; }
+          .content-wrap { padding: 16px 12px 48px; }
+        }
         input[type=number]::-webkit-inner-spin-button { opacity:0.5; }
       `}</style>
 
       <div style={{ minHeight: "100vh", background: "#F4F1EB" }}>
 
         {/* ══ HERO ══ */}
-        <div style={{ position: "relative", height: 800, overflow: "hidden" }}>
+        <div className="hero-section" style={{ position: "relative", overflow: "hidden" }}>
           <img src="/living-room.png" alt="" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center 30%", filter: "saturate(0.72) brightness(0.6)" }} />
           <div style={{ position: "absolute", inset: 0, background: "linear-gradient(140deg, rgba(18,26,21,0.88) 0%, rgba(18,26,21,0.28) 55%, transparent 100%)" }} />
           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", justifyContent: "center", paddingLeft: "clamp(28px,7vw,100px)" }}>
@@ -601,24 +807,25 @@ export default function LoanSimulator() {
         </div>
 
         {/* ══ CONTENT ══ */}
-        <div style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 20px 80px" }}>
+        <div className="content-wrap">
 
           {/* タブ */}
-          <div className="slide-up d1" style={{ display: "flex", gap: 6, marginBottom: 24, background: "#FAFAF8", border: "1px solid #EAE5DB", borderRadius: 16, padding: 5, width: "fit-content" }}>
+          <div className="slide-up d1 tab-nav" style={{ display: "flex", gap: 6, marginBottom: 24, background: "#FAFAF8", border: "1px solid #EAE5DB", borderRadius: 16, padding: 5 }}>
             {([
               { id: "main", Icon: Home, label: "シミュレーター" },
               { id: "compare", Icon: ArrowRightLeft, label: "プラン比較" },
               { id: "rent", Icon: Building2, label: "賃貸 vs 購入" },
+              { id: "tax", Icon: Zap, label: "税制優遇" },
             ] as const).map(({ id, Icon, label }) => (
-              <button key={id} className={`tab-btn${activeTab === id ? " active" : ""}`} onClick={() => setActiveTab(id)}>
-                <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Icon size={13} strokeWidth={2} />{label}</span>
+              <button key={id} className={`tab-btn${activeTab === id ? " active" : ""}`} onClick={() => setActiveTab(id)} style={{ flex: 1 }}>
+                <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><Icon size={13} strokeWidth={2} /><span className="tab-label">{label}</span></span>
               </button>
             ))}
           </div>
 
           {/* ─── MAIN TAB ─── */}
           {activeTab === "main" && (
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(280px,380px) 1fr", gap: 20 }}>
+            <div className="main-grid">
 
               {/* 左 */}
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -639,14 +846,14 @@ export default function LoanSimulator() {
                         <Percent size={13} strokeWidth={1.8} />
                         <span style={{ fontSize: 10, fontWeight: 500, letterSpacing: "0.14em", textTransform: "uppercase" }}>金利（5年ごと）</span>
                       </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "68px 1fr 96px", gap: 6, marginBottom: 5 }}>
+                      <div className="rate-col-grid" style={{ marginBottom: 5 }}>
                         <span /><span style={{ fontSize: 9, color: "#A89A8A", textAlign: "center" }}>金利</span><span style={{ fontSize: 9, color: "#A89A8A", textAlign: "center" }}>月返済額</span>
                       </div>
                       {Array.from({ length: periods }).map((_, i) => {
                         const s = i * 5 + 1, e2 = Math.min((i + 1) * 5, year);
                         const mp = monthlyPayments[i * 5 * 12] ?? 0;
                         return (
-                          <div key={i} style={{ display: "grid", gridTemplateColumns: "68px 1fr 96px", gap: 6, marginBottom: 6, alignItems: "center" }}>
+                          <div key={i} className="rate-col-grid" style={{ marginBottom: 6, alignItems: "center" }}>
                             <span style={{ fontSize: 10, color: "#8C7B6B", whiteSpace: "nowrap" }}>{s}〜{e2}年目</span>
                             <div style={{ position: "relative" }}>
                               <input type="number" step="0.1" min="0" max="20" value={rates[i]}
@@ -711,7 +918,7 @@ export default function LoanSimulator() {
                 </div>
 
                 {/* サマリーピル */}
-                <div className="slide-up d3" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <div className="slide-up d3 pill-grid">
                   {[
                     { label: "返済総額", val: `${Math.floor(totalPayment / 10000).toLocaleString()} 万円`, color: "#FAFAF8", bg: "#3D3730", sub: "#BDB5AC" },
                     { label: "利息割合", val: `${interestRatio}%`, color: "#FAFAF8", bg: "#C8A96E", sub: "rgba(255,255,255,0.7)" },
@@ -726,7 +933,7 @@ export default function LoanSimulator() {
 
               {/* 右 */}
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                <div className="chart-grid">
                   {/* 円グラフ */}
                   <div className="hover-lift slide-up d2" style={{ ...cardStyle, padding: 22, boxShadow: "0 2px 12px rgba(0,0,0,0.04)" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
@@ -780,13 +987,13 @@ export default function LoanSimulator() {
 
                 {/* サマリーバー */}
                 <div className="hover-lift slide-up d4" style={{ ...cardStyle, padding: 24, boxShadow: "0 2px 12px rgba(0,0,0,0.04)" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1px 1fr 1px 1fr" }}>
+                  <div className="summary-bar-grid">
                     {[
                       { label: "借入元金", val: Math.floor(principal / 10000), color: "#3D3730" }, null,
                       { label: "利息合計", val: Math.floor(totalInterest / 10000), color: "#C8A96E" }, null,
                       { label: "返済総額", val: Math.floor(totalPayment / 10000), color: "#3D3730" },
                     ].map((item, i) => item === null
-                      ? <div key={i} style={{ background: "#EAE5DB", alignSelf: "stretch" }} />
+                      ? <div key={i} className="summary-sep" style={{ background: "#EAE5DB", alignSelf: "stretch" }} />
                       : <div key={i} style={{ padding: "0 20px" }}>
                         <p style={{ fontSize: 9, color: "#8C7B6B", letterSpacing: "0.14em", textTransform: "uppercase", margin: "0 0 6px", whiteSpace: "nowrap" }}>{item.label}</p>
                         <p style={{ fontSize: 18, fontWeight: 700, color: item.color, margin: 0, whiteSpace: "nowrap" }}>
@@ -848,7 +1055,7 @@ export default function LoanSimulator() {
           {/* ─── COMPARE TAB ─── */}
           {activeTab === "compare" && (
             <div className="slide-up d1">
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+              <div className="compare-grid">
                 {/* プランA */}
                 <div style={{ ...cardStyle, padding: 26, boxShadow: "0 2px 12px rgba(0,0,0,0.04)" }}>
                   <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#5C7A6B", color: "#fff", borderRadius: 8, padding: "3px 12px", fontSize: 11, fontWeight: 700, marginBottom: 20 }}>プラン A</div>
@@ -913,7 +1120,7 @@ export default function LoanSimulator() {
                       <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="#EAE5DB" />
                       <XAxis dataKey="year" type="category" allowDuplicatedCategory={false} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#A89A8A" }} />
                       <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#A89A8A" }} />
-                      <Tooltip content={<AreaTooltip />} />
+                      <Tooltip content={<AreaTooltip />} position={{ x: 0, y: 210 }} wrapperStyle={{ zIndex: 50 }} />
                       <Line data={result.lineData} type="monotone" dataKey="balance" stroke="#5C7A6B" strokeWidth={2.5} dot={false} name="プランA" />
                       <Line data={result2.lineData} type="monotone" dataKey="balance" stroke="#C8A96E" strokeWidth={2.5} dot={false} strokeDasharray="6 3" name="プランB" />
                     </LineChart>
@@ -926,7 +1133,7 @@ export default function LoanSimulator() {
                     </div>
                   ))}
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+                <div className="diff-grid">
                   {[
                     { label: "月返済額の差", val: Math.abs((result2.monthlyPayments[0] ?? 0) - monthlyPayment).toLocaleString() + "円", color: "#3D3730" },
                     { label: "総支払いの差", val: Math.abs(Math.floor((result2.totalPayment - totalPayment) / 10000)).toLocaleString() + "万円", color: result2.totalPayment > totalPayment ? "#C8A96E" : "#5C7A6B" },
@@ -944,7 +1151,7 @@ export default function LoanSimulator() {
 
           {/* ─── RENT TAB ─── */}
           {activeTab === "rent" && (
-            <div className="slide-up d1" style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20 }}>
+            <div className="slide-up d1 rent-grid">
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                 <div style={{ ...cardStyle, padding: 24, boxShadow: "0 2px 12px rgba(0,0,0,0.04)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 20 }}>
@@ -1001,7 +1208,7 @@ export default function LoanSimulator() {
                         <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="#EAE5DB" />
                         <XAxis dataKey="year" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#A89A8A" }} />
                         <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#A89A8A" }} />
-                        <Tooltip content={<AreaTooltip />} />
+                        <Tooltip content={<AreaTooltip />} position={{ x: 0, y: 230 }} wrapperStyle={{ zIndex: 50 }} />
                         <Area type="monotone" dataKey="rent" name="賃貸" stroke="#C8A96E" strokeWidth={2.5} fill="url(#gR)" dot={false} />
                         <Area type="monotone" dataKey="buy" name="購入" stroke="#5C7A6B" strokeWidth={2.5} fill="url(#gB2)" dot={false} />
                       </AreaChart>
@@ -1030,6 +1237,263 @@ export default function LoanSimulator() {
                       </div>
                     ))}
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {/* ─── TAX TAB ─── */}
+          {activeTab === "tax" && (
+            <div className="slide-up d1 tax-grid">
+
+              {/* 左：入力パネル */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+                {/* 収入情報 */}
+                <div style={{ ...cardStyle, padding: 26, boxShadow: "0 2px 12px rgba(0,0,0,0.04)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+                    <Banknote size={14} strokeWidth={1.8} style={{ color: "#5C7A6B" }} />
+                    <h2 style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.16em", textTransform: "uppercase", color: "#3D3730", margin: 0 }}>収入・家族情報</h2>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+                    <SliderRow icon={Banknote} label="年収" display={`${annualIncome.toLocaleString()} 万円`} min={200} max={3000} step={50} value={annualIncome} onChange={setAnnualIncome} />
+
+                    {/* 課税所得・税額プレビュー */}
+                    <div style={{ background: "#F0EDE6", borderRadius: 12, padding: "14px 16px", display: "grid", gridTemplateColumns: "1fr 1px 1fr 1px 1fr", gap: 0 }}>
+                      {[
+                        { label: "課税所得", val: `${Math.floor(taxableIncome)} 万円` },
+                        null,
+                        { label: "所得税（概算）", val: `${Math.floor(incomeTax)} 万円` },
+                        null,
+                        { label: "住民税（概算）", val: `${Math.floor(residentTax)} 万円` },
+                      ].map((item, i) => item === null
+                        ? <div key={i} style={{ background: "#DDD8CE", alignSelf: "stretch", margin: "0 8px" }} />
+                        : <div key={i} style={{ textAlign: "center" }}>
+                          <p style={{ fontSize: 9, color: "#8C7B6B", margin: "0 0 4px", letterSpacing: "0.1em" }}>{item.label}</p>
+                          <p style={{ fontSize: 13, fontWeight: 700, color: "#3D3730", margin: 0 }}>{item.val}</p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 世帯種別 */}
+                    <div>
+                      <p style={{ fontSize: 10, color: "#8C7B6B", letterSpacing: "0.14em", textTransform: "uppercase", margin: "0 0 10px" }}>世帯種別</p>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        {([["single", "単身"], ["family", "家族あり"]] as const).map(([val, lbl]) => (
+                          <button key={val} onClick={() => setHouseholdType(val)}
+                            style={{ padding: "9px 0", borderRadius: 10, border: `1.5px solid ${householdType === val ? "#5C7A6B" : "#E0DAD0"}`, background: householdType === val ? "#5C7A6B" : "transparent", color: householdType === val ? "#fff" : "#8C7B6B", fontSize: 12, fontWeight: 500, cursor: "pointer", transition: "all 0.2s" }}>
+                            {lbl}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 物件情報 */}
+                <div style={{ ...cardStyle, padding: 26, boxShadow: "0 2px 12px rgba(0,0,0,0.04)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+                    <Home size={14} strokeWidth={1.8} style={{ color: "#5C7A6B" }} />
+                    <h2 style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.16em", textTransform: "uppercase", color: "#3D3730", margin: 0 }}>物件・入居情報</h2>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+                    {/* 新築/中古 */}
+                    <div>
+                      <p style={{ fontSize: 10, color: "#8C7B6B", letterSpacing: "0.14em", textTransform: "uppercase", margin: "0 0 10px" }}>新築 / 中古</p>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        {([true, false] as const).map((v) => (
+                          <button key={String(v)} onClick={() => setIsNewBuild(v)}
+                            style={{ padding: "9px 0", borderRadius: 10, border: `1.5px solid ${isNewBuild === v ? "#5C7A6B" : "#E0DAD0"}`, background: isNewBuild === v ? "#5C7A6B" : "transparent", color: isNewBuild === v ? "#fff" : "#8C7B6B", fontSize: 12, fontWeight: 500, cursor: "pointer", transition: "all 0.2s" }}>
+                            {v ? "新築" : "中古"}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 物件種別（新築のみ） */}
+                    {isNewBuild && (
+                      <div>
+                        <p style={{ fontSize: 10, color: "#8C7B6B", letterSpacing: "0.14em", textTransform: "uppercase", margin: "0 0 10px" }}>省エネ性能</p>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                          {([
+                            {
+                              val: "certified", label: "認定長期優良・低炭素住宅",
+                              tip: "対象：新築のみ\n物件：長期優良住宅・低炭素住宅の認定を受けた物件\n借入限度額：5,000万円（〜2025年）/ 4,500万円（2026年〜）\n補助金：子育てエコホーム支援事業 160万円"
+                            },
+                            {
+                              val: "zeh", label: "ZEH水準省エネ住宅",
+                              tip: "対象：新築のみ\n物件：ZEH・Nearly ZEH等の認定を受けた物件\n借入限度額：4,500万円（〜2025年）/ 3,500万円（2026年〜）\n補助金：子育てエコホーム支援事業 100万円"
+                            },
+                            {
+                              val: "eco", label: "省エネ基準適合住宅",
+                              tip: "対象：新築・中古\n物件：省エネ基準に適合する物件（断熱等性能等級4以上等）\n借入限度額：4,000万円（〜2025年）/ 3,000万円（2026年〜）\n補助金：子育てエコホーム支援事業 80万円"
+                            },
+                            {
+                              val: "general", label: "一般住宅（省エネ基準以下）",
+                              tip: "対象：新築・中古\n物件：省エネ基準未満の物件（2024年以降の新築は原則対象外）\n借入限度額：3,000万円（〜2025年）/ 2,000万円（2026年〜）\n補助金：なし\n注意：2024年以降の新築は省エネ基準適合が必須になる予定"
+                            },
+                          ] as const).map(({ val, label, tip }) => (
+                            <label key={val} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, background: propertyType === val ? "#EAF2EE" : "#F8F6F2", border: `1.5px solid ${propertyType === val ? "#5C7A6B" : "transparent"}`, cursor: "pointer", transition: "all 0.2s" }}>
+                              <input type="radio" name="propType" value={val} checked={propertyType === val} onChange={() => setPropertyType(val)}
+                                style={{ accentColor: "#5C7A6B", width: 14, height: 14, flexShrink: 0 }} />
+                              <span style={{ fontSize: 11, color: "#3D3730", flex: 1, lineHeight: 1.5 }}>{label}</span>
+                              {/* インフォアイコン */}
+                              <span className="info-wrap">
+                                <Info size={13} className="info-icon" strokeWidth={1.8} />
+                                <span className="info-tip">{tip.split("\n").map((line, i) => (
+                                  <span key={i} style={{ display: "block" }}>{line}</span>
+                                ))}</span>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 入居年 */}
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                        <p style={{ fontSize: 10, color: "#8C7B6B", letterSpacing: "0.14em", textTransform: "uppercase", margin: 0 }}>入居予定年</p>
+                        <span className="info-wrap">
+                          <Info size={12} className="info-icon" strokeWidth={1.8} />
+                          <span className="info-tip">{"入居年によって控除限度額が変わります。\n2025年末までの入居が最大の恩恵を受けられます。"}</span>
+                        </span>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6 }}>
+                        {[2024, 2025, 2026, 2027].map(y => (
+                          <button key={y} onClick={() => setEntryYear(y)}
+                            style={{ padding: "8px 0", borderRadius: 10, border: `1.5px solid ${entryYear === y ? "#5C7A6B" : "#E0DAD0"}`, background: entryYear === y ? "#5C7A6B" : "transparent", color: entryYear === y ? "#fff" : "#8C7B6B", fontSize: 12, fontWeight: 500, cursor: "pointer", transition: "all 0.2s" }}>
+                            {y}年
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 右：結果パネル */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+                {/* サマリーカード */}
+                <div style={{ background: "linear-gradient(135deg,#2D3B35,#1E2A25)", borderRadius: 20, padding: 28, boxShadow: "0 4px 24px rgba(0,0,0,0.12)" }}>
+                  <p style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", letterSpacing: "0.18em", textTransform: "uppercase", margin: "0 0 16px" }}>13年間の総合試算</p>
+                  <div className="tax-benefit-grid">
+                    {[
+                      { label: "控除累計額", val: `${totalDeduction.toLocaleString()} 万円`, sub: "所得税＋住民税から控除", color: "#C8A96E", tip: "年末残高×0.7%を最大13年間、所得税・住民税から控除。所得税で控除しきれない分は住民税（上限9.75万円/年）から控除。" },
+                      { label: "補助金", val: `${subsidy} 万円`, sub: "子育てエコホーム支援事業", color: "#7ABA9C", tip: "新築住宅の省エネ性能に応じた補助。長期優良住宅160万円、ZEH100万円、省エネ基準適合80万円。子育て世帯・若者夫婦世帯が対象（一部除く）。" },
+                      { label: "合計メリット", val: `${totalBenefit.toLocaleString()} 万円`, sub: "控除＋補助金の合計", color: "#E8D5A8", tip: "住宅ローン控除累計額と補助金の合計。実質的な住宅取得コストの削減額を示します。" },
+                    ].map(({ label, val, sub, color, tip }) => (
+                      <div key={label} style={{ background: "rgba(255,255,255,0.07)", borderRadius: 14, padding: "16px 18px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6 }}>
+                          <p style={{ fontSize: 9, color: "rgba(255,255,255,0.5)", letterSpacing: "0.1em", margin: 0, flex: 1 }}>{label}</p>
+                          <span className="info-wrap">
+                            <Info size={11} strokeWidth={1.8} style={{ color: "rgba(255,255,255,0.3)", cursor: "help" }} />
+                            <span className="info-tip" style={{ bottom: "calc(100% + 8px)" }}>{tip}</span>
+                          </span>
+                        </div>
+                        <p style={{ fontSize: 18, fontWeight: 700, color, margin: "0 0 3px" }}>{val}</p>
+                        <p style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", margin: 0 }}>{sub}</p>
+                      </div>
+                    ))}
+                  </div>
+                  {/* 借入限度額バッジ */}
+                  <div style={{ marginTop: 18, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 10, color: "rgba(255,255,255,0.45)" }}>適用借入限度額</span>
+                    <span style={{ background: "rgba(200,169,110,0.2)", border: "1px solid rgba(200,169,110,0.5)", borderRadius: 8, padding: "3px 12px", fontSize: 12, fontWeight: 700, color: "#C8A96E" }}>
+                      {loanLimit.toLocaleString()} 万円
+                    </span>
+                    <span style={{ fontSize: 10, color: "rgba(255,255,255,0.45)" }}>控除期間</span>
+                    <span style={{ background: "rgba(92,122,107,0.3)", border: "1px solid rgba(92,122,107,0.5)", borderRadius: 8, padding: "3px 12px", fontSize: 12, fontWeight: 700, color: "#7ABA9C" }}>
+                      {deductionYears}年間
+                    </span>
+                  </div>
+                </div>
+
+                {/* 年次控除グラフ */}
+                <div style={{ ...cardStyle, padding: 24, boxShadow: "0 2px 12px rgba(0,0,0,0.04)" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                    <h3 style={{ fontSize: 11, fontWeight: 600, color: "#3D3730", letterSpacing: "0.12em", textTransform: "uppercase", margin: 0 }}>年次控除額推移</h3>
+                    <span className="info-wrap">
+                      <Info size={13} className="info-icon" strokeWidth={1.8} />
+                      <span className="info-tip">{"棒グラフ：各年の控除額（所得税＋住民税）\n折れ線：控除累計額\n残高減少とともに控除額も逓減します。"}</span>
+                    </span>
+                  </div>
+                  <div style={{ height: 240 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={taxDeductionData.map(r => ({ ...r, yr: `${r.yr}年目` }))} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="gDed" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#C8A96E" stopOpacity={0.25} />
+                            <stop offset="100%" stopColor="#C8A96E" stopOpacity={0} />
+                          </linearGradient>
+                          <linearGradient id="gCum" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#5C7A6B" stopOpacity={0.2} />
+                            <stop offset="100%" stopColor="#5C7A6B" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="#EAE5DB" />
+                        <XAxis dataKey="yr" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#A89A8A" }} interval={1} />
+                        <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#A89A8A" }} />
+                        <Tooltip content={({ active, payload, label }: any) => active && payload?.length ? (
+                          <div style={{ background: "rgba(250,250,248,0.97)", border: "1px solid #E0DAD0", borderRadius: 12, padding: "10px 14px", fontSize: 11, boxShadow: "0 8px 24px rgba(0,0,0,0.1)" }}>
+                            <p style={{ color: "#A89A8A", margin: "0 0 6px" }}>{label}</p>
+                            {payload.map((p: any, i: number) => (
+                              <p key={i} style={{ color: p.color, fontWeight: 600, margin: "2px 0" }}>{p.name}: {p.value?.toFixed ? p.value.toFixed(1) : p.value} 万円</p>
+                            ))}
+                          </div>
+                        ) : null} position={{ x: 0, y: 180 }} wrapperStyle={{ zIndex: 50 }} />
+                        <Area type="monotone" dataKey="actualDeduction" name="年間控除額" stroke="#C8A96E" strokeWidth={2.5} fill="url(#gDed)" dot={false} activeDot={{ r: 4, fill: "#C8A96E", stroke: "#FAFAF8", strokeWidth: 2 }} />
+                        <Area type="monotone" dataKey="cumDeduction" name="累計控除額" stroke="#5C7A6B" strokeWidth={2} fill="url(#gCum)" dot={false} strokeDasharray="5 3" activeDot={{ r: 4, fill: "#5C7A6B", stroke: "#FAFAF8", strokeWidth: 2 }} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div style={{ display: "flex", gap: 20, justifyContent: "center", marginTop: 8 }}>
+                    {[{ label: "年間控除額", color: "#C8A96E", dash: false }, { label: "累計控除額", color: "#5C7A6B", dash: true }].map(({ label, color, dash }) => (
+                      <div key={label} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#8C7B6B" }}>
+                        <svg width="20" height="3"><line x1="0" y1="1.5" x2="20" y2="1.5" stroke={color} strokeWidth="2" strokeDasharray={dash ? "5 3" : "none"} /></svg>{label}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 年次テーブル */}
+                <div style={{ ...cardStyle, overflow: "hidden", boxShadow: "0 2px 12px rgba(0,0,0,0.04)" }}>
+                  <div style={{ padding: "16px 22px", borderBottom: "1px solid #EAE5DB", display: "flex", alignItems: "center", gap: 8 }}>
+                    <CalendarDays size={13} strokeWidth={1.8} style={{ color: "#5C7A6B" }} />
+                    <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.15em", textTransform: "uppercase", color: "#3D3730" }}>年次控除明細</span>
+                  </div>
+                  <div style={{ overflowY: "auto", maxHeight: 280 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ borderBottom: "1px solid #EAE5DB" }}>
+                          {["年目", "残高", "控除上限", "実控除額", "累計控除"].map(h => (
+                            <th key={h} style={{ padding: "8px 14px", textAlign: "right", fontSize: 9, color: "#8C7B6B", fontWeight: 500, letterSpacing: "0.1em", whiteSpace: "nowrap" }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {taxDeductionData.map((row, i) => (
+                          <tr key={i} className="yr" style={{ borderBottom: "1px solid #F0EDE6", background: i % 2 === 0 ? "#FAFAF8" : "#FDF9F4" }}>
+                            <td style={{ padding: "8px 14px", textAlign: "right", color: "#8C7B6B", fontWeight: 500 }}>{row.yr}</td>
+                            <td style={{ padding: "8px 14px", textAlign: "right", color: "#3D3730" }}>{row.balance.toLocaleString()} 万</td>
+                            <td style={{ padding: "8px 14px", textAlign: "right", color: "#A89A8A" }}>{row.maxDeduction.toFixed(1)} 万</td>
+                            <td style={{ padding: "8px 14px", textAlign: "right", color: "#C8A96E", fontWeight: 700 }}>{row.actualDeduction.toFixed(1)} 万</td>
+                            <td style={{ padding: "8px 14px", textAlign: "right", color: "#5C7A6B", fontWeight: 700 }}>{row.cumDeduction.toFixed(1)} 万</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* 注意事項 */}
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "14px 16px", background: "#F0EDE6", borderRadius: 14 }}>
+                  <Info size={13} strokeWidth={1.6} style={{ color: "#A89A8A", marginTop: 1, flexShrink: 0 }} />
+                  <p style={{ fontSize: 10, color: "#8C7B6B", lineHeight: 1.8, margin: 0 }}>
+                    本シミュレーションは概算です。実際の控除額は確定申告・年末調整の内容、扶養控除等により異なります。
+                    補助金は申請時期・予算枠・世帯要件により変動します。詳細は税務署・住宅支援機構にご確認ください。
+                  </p>
                 </div>
               </div>
             </div>
